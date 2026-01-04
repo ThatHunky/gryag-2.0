@@ -32,13 +32,17 @@ def admin_only(func):
 
 @router.message(Command("status"))
 @admin_only
-async def cmd_status(message: Message) -> None:
+async def cmd_status(message: Message, **kwargs) -> None:
     """Show bot status and health."""
+    from bot.main import get_uptime
     settings = get_settings()
-    uptime = "Unknown"  # TODO: Track actual uptime
+    uptime = get_uptime()
+    
+    settings = get_settings()
     
     status_text = (
         "📊 **Статус бота**\n\n"
+        f"⏱ **Uptime:** {uptime}\n"
         f"**Режим доступу:** {settings.access_mode}\n"
         f"**LLM модель:** {settings.llm_model}\n"
         f"**Reasoning:** {'✅' if settings.llm_reasoning_enabled else '❌'}\n"
@@ -56,7 +60,7 @@ async def cmd_status(message: Message) -> None:
 
 @router.message(Command("config"))
 @admin_only
-async def cmd_config(message: Message) -> None:
+async def cmd_config(message: Message, **kwargs) -> None:
     """Show current configuration."""
     settings = get_settings()
     
@@ -79,7 +83,7 @@ async def cmd_config(message: Message) -> None:
 
 @router.message(Command("ban"))
 @admin_only
-async def cmd_ban(message: Message) -> None:
+async def cmd_ban(message: Message, **kwargs) -> None:
     """Ban a user from bot interaction. Usage: /ban <user_id> [reason]"""
     args = message.text.split(maxsplit=2) if message.text else []
     
@@ -113,7 +117,7 @@ async def cmd_ban(message: Message) -> None:
 
 @router.message(Command("unban"))
 @admin_only
-async def cmd_unban(message: Message) -> None:
+async def cmd_unban(message: Message, **kwargs) -> None:
     """Unban a user. Usage: /unban <user_id>"""
     args = message.text.split() if message.text else []
     
@@ -141,7 +145,7 @@ async def cmd_unban(message: Message) -> None:
 
 @router.message(Command("restrict"))
 @admin_only
-async def cmd_restrict(message: Message) -> None:
+async def cmd_restrict(message: Message, **kwargs) -> None:
     """Temporarily restrict a user. Usage: /restrict <user_id> <hours> [reason]"""
     args = message.text.split(maxsplit=3) if message.text else []
     
@@ -183,29 +187,127 @@ async def cmd_restrict(message: Message) -> None:
 
 @router.message(Command("whitelist"))
 @admin_only
-async def cmd_whitelist(message: Message) -> None:
-    """Manage whitelist. Usage: /whitelist add|remove <chat_id>"""
-    # TODO: Implement dynamic whitelist management via DB
-    await message.answer(
-        "⚠️ Динамічне керування whitelist ще в розробці.\n"
-        "Наразі використовуйте змінну `WHITELIST_CHATS` у `.env`"
-    )
+async def cmd_whitelist(message: Message, **kwargs) -> None:
+    """Manage chat whitelist. Usage: /whitelist add|remove <chat_id>"""
+    args = message.text.split() if message.text else []
+    
+    if len(args) < 3:
+        await message.answer("❌ Usage: `/whitelist add|remove <chat_id>`", parse_mode="Markdown")
+        return
+        
+    action = args[1].lower()
+    try:
+        chat_id = int(args[2])
+    except ValueError:
+        await message.answer("❌ Invalid chat_id")
+        return
+
+    from bot.db.models import AccessList
+    from sqlalchemy import delete, select
+    
+    if action == "add":
+        async with get_session() as session:
+            # Check if exists
+            exists = await session.scalar(
+                select(AccessList).where(
+                    AccessList.entity_id == chat_id,
+                    AccessList.entity_type == "chat",
+                    AccessList.list_type == "whitelist"
+                )
+            )
+            if exists:
+                await message.answer("ℹ️ Чат вже у білому списку.")
+                return
+            
+            entry = AccessList(
+                entity_id=chat_id,
+                entity_type="chat",
+                list_type="whitelist",
+                created_by=message.from_user.id,
+            )
+            session.add(entry)
+        await message.answer(f"✅ Чат {chat_id} додано до білого списку.")
+        
+    elif action == "remove":
+        async with get_session() as session:
+            await session.execute(
+                delete(AccessList).where(
+                    AccessList.entity_id == chat_id,
+                    AccessList.entity_type == "chat",
+                    AccessList.list_type == "whitelist"
+                )
+            )
+        await message.answer(f"✅ Чат {chat_id} видалено з білого списку.")
+    else:
+        await message.answer("❌ Invalid action. Use 'add' or 'remove'.")
 
 
 @router.message(Command("blacklist"))
 @admin_only
-async def cmd_blacklist(message: Message) -> None:
-    """Manage blacklist. Usage: /blacklist add|remove <user_id>"""
-    # TODO: Implement dynamic blacklist management via DB
-    await message.answer(
-        "⚠️ Динамічне керування blacklist ще в розробці.\n"
-        "Наразі використовуйте змінну `BLACKLIST_USERS` у `.env`"
-    )
+async def cmd_blacklist(message: Message, **kwargs) -> None:
+    """Manage user blacklist. Usage: /blacklist add|remove <user_id>"""
+    args = message.text.split() if message.text else []
+    
+    if len(args) < 3:
+        await message.answer("❌ Usage: `/blacklist add|remove <user_id>`", parse_mode="Markdown")
+        return
+        
+    action = args[1].lower()
+    try:
+        user_id = int(args[2])
+    except ValueError:
+        await message.answer("❌ Invalid user_id")
+        return
+
+    from bot.db.models import AccessList
+    from sqlalchemy import delete, select
+
+    if action == "add":
+        async with get_session() as session:
+            exists = await session.scalar(
+                select(AccessList).where(
+                    AccessList.entity_id == user_id,
+                    AccessList.entity_type == "user",
+                    AccessList.list_type == "blacklist"
+                )
+            )
+            if exists:
+                await message.answer("ℹ️ Користувач вже у чорному списку.")
+                return
+            
+            entry = AccessList(
+                entity_id=user_id,
+                entity_type="user",
+                list_type="blacklist",
+                created_by=message.from_user.id,
+            )
+            session.add(entry)
+        await message.answer(f"✅ Користувач {user_id} додано до чорного списку.")
+        
+    elif action == "remove":
+        async with get_session() as session:
+            await session.execute(
+                delete(AccessList).where(
+                    AccessList.entity_id == user_id,
+                    AccessList.entity_type == "user",
+                    AccessList.list_type == "blacklist"
+                )
+            )
+        await message.answer(f"✅ Користувач {user_id} видалено з чорного списку.")
+    else:
+        await message.answer("❌ Invalid action. Use 'add' or 'remove'.")
 
 
 @router.message(Command("reload_prompt"))
 @admin_only
-async def cmd_reload_prompt(message: Message) -> None:
+async def cmd_reload_prompt(message: Message, **kwargs) -> None:
     """Reload system prompt from file."""
-    # TODO: Implement prompt reloading
-    await message.answer("✅ Системний промпт перезавантажено.")
+    # Since prompts are read on-demand (no cache), we just verify file existence
+    from pathlib import Path
+    settings = get_settings()
+    prompt_file = Path("prompts") / settings.system_prompt_file
+    
+    if prompt_file.exists():
+        await message.answer(f"✅ Системний промпт '{settings.system_prompt_file}' активний і буде завантажений при наступному запиті.")
+    else:
+        await message.answer(f"⚠️ Файл промпту '{settings.system_prompt_file}' не знайдено! Використовуватиметься дефолтний.")

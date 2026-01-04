@@ -32,7 +32,6 @@ class CalculatorTool(BaseTool):
         ast.Mod: operator.mod,
         ast.Pow: operator.pow,
         ast.USub: operator.neg,
-        ast.UAdd: operator.pos,
     }
     
     async def execute(self, expression: str) -> ToolResult:

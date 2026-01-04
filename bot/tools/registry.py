@@ -7,6 +7,12 @@ from bot.tools.base import BaseTool, ToolResult
 
 logger = logging.getLogger(__name__)
 
+TOOL_ALIASES: dict[str, str] = {
+    # Backwards compatibility for older prompts / model habits
+    "remember_memory": "save_user_fact",
+    "recall_memories": "get_user_facts",
+}
+
 
 class ToolRegistry:
     """Registry for managing and discovering tools."""
@@ -43,6 +49,11 @@ class ToolRegistry:
     async def execute(self, name: str, **kwargs) -> ToolResult:
         """Execute a tool by name."""
         tool = self.get(name)
+        if tool is None and name in TOOL_ALIASES:
+            aliased = TOOL_ALIASES[name]
+            logger.info(f"Tool alias applied: {name} -> {aliased}")
+            name = aliased
+            tool = self.get(name)
         if tool is None:
             return ToolResult(
                 success=False,
@@ -80,8 +91,22 @@ def _register_default_tools(registry: ToolRegistry) -> None:
     # Tools will be added as they are implemented
     from bot.tools.calculator import CalculatorTool
     from bot.tools.weather import WeatherTool
+    from bot.tools.search import SearchTool
+    from bot.tools.image import GenerateImageTool
+    from bot.tools.memory import (
+        SaveUserFactTool,
+        GetUserFactsTool,
+        DeleteUserFactTool,
+        DeleteAllUserFactsTool,
+    )
     
     registry.register(CalculatorTool())
     registry.register(WeatherTool())
+    registry.register(SearchTool())
+    registry.register(GenerateImageTool())
+    registry.register(SaveUserFactTool())
+    registry.register(GetUserFactsTool())
+    registry.register(DeleteUserFactTool())
+    registry.register(DeleteAllUserFactsTool())
     
     logger.info(f"Registered {len(registry.list_names())} tools")

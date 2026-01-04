@@ -14,7 +14,6 @@ class SensitiveDataFilter(logging.Filter):
     """Filter to mask sensitive data in logs."""
     
     SENSITIVE_PATTERNS = [
-        "token",
         "api_key",
         "password",
         "secret",

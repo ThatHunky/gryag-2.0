@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 _start_time: datetime | None = None
 
 
+def get_uptime() -> str:
+    """Get bot uptime string."""
+    if not _start_time:
+        return "Startup..."
+    
+    delta = datetime.utcnow() - _start_time
+    days = delta.days
+    hours, remainder = divmod(delta.seconds, 3600)
+    minutes, sections = divmod(remainder, 60)
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    
+    return " ".join(parts)
+
+
 async def startup(bot: Bot, dp: Dispatcher) -> None:
     """Startup validation and initialization."""
     global _start_time
@@ -64,6 +84,13 @@ async def startup(bot: Bot, dp: Dispatcher) -> None:
         logger.info("Background scheduler started")
     except Exception as e:
         logger.warning(f"Scheduler failed to start: {e}")
+
+    # 5. Setup commands
+    try:
+        from bot.utils.commands import setup_bot_commands
+        await setup_bot_commands(bot)
+    except Exception as e:
+        logger.warning(f"Failed to setup commands: {e}")
     
     logger.info("Startup complete!")
 

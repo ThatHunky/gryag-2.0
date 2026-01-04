@@ -47,7 +47,8 @@ class MessageRepository:
         result = await self.session.execute(
             select(Message)
             .where(Message.chat_id == chat_id)
-            .order_by(Message.created_at.desc())
+            # Ensure deterministic ordering even when created_at ties
+            .order_by(Message.created_at.desc(), Message.id.desc())
             .limit(limit)
         )
         return list(reversed(result.scalars().all()))
@@ -61,7 +62,8 @@ class MessageRepository:
         result = await self.session.execute(
             select(Message)
             .where(Message.chat_id == chat_id, Message.created_at >= since)
-            .order_by(Message.created_at.asc())
+            # Ensure deterministic ordering even when created_at ties
+            .order_by(Message.created_at.asc(), Message.id.asc())
         )
         return list(result.scalars().all())
 

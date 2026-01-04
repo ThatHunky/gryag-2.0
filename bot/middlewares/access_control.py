@@ -36,6 +36,8 @@ class AccessControlMiddleware(BaseMiddleware):
         user_id = message.from_user.id if message.from_user else 0
         chat_id = message.chat.id
         
+        from sqlalchemy import func
+        
         # Layer 1: Admin bypass
         if user_id in settings.admin_ids:
             return await handler(event, data)
@@ -46,12 +48,15 @@ class AccessControlMiddleware(BaseMiddleware):
             # Silently ignore banned users
             return
         
-        # Layer 3: Blacklist check
+        # Layer 3: Blacklist check (Env + DB)
         if user_id in settings.blacklist_users:
             return
         
+        if await self._check_blacklist(user_id):
+            return
+        
         # Layer 4: Access mode check
-        if not self._check_access_mode(settings, message):
+        if not await self._check_access_mode(settings, message):
             return
         
         return await handler(event, data)
@@ -78,7 +83,21 @@ class AccessControlMiddleware(BaseMiddleware):
             
             return True
 
-    def _check_access_mode(self, settings, message: Message) -> bool:
+    async def _check_blacklist(self, user_id: int) -> bool:
+        """Check if user is blacklisted in DB."""
+        from bot.db.models import AccessList
+        
+        async with get_session() as session:
+            count = await session.scalar(
+                select(func.count(AccessList.id)).where(
+                    AccessList.entity_id == user_id,
+                    AccessList.entity_type == "user",
+                    AccessList.list_type == "blacklist"
+                )
+            )
+            return count > 0
+
+    async def _check_access_mode(self, settings, message: Message) -> bool:
         """Check if message passes access mode filter."""
         mode = settings.access_mode
         chat_type = message.chat.type
@@ -91,6 +110,23 @@ class AccessControlMiddleware(BaseMiddleware):
             return chat_type == "private"
         
         if mode == "whitelist":
-            return chat_id in settings.whitelist_chats or chat_type == "private"
+            # Check env var first
+            if chat_id in settings.whitelist_chats:
+                return True
+            
+            # Check DB
+            from bot.db.models import AccessList
+            async with get_session() as session:
+                count = await session.scalar(
+                    select(func.count(AccessList.id)).where(
+                        AccessList.entity_id == chat_id,
+                        AccessList.entity_type == "chat",
+                        AccessList.list_type == "whitelist"
+                    )
+                )
+                if count > 0:
+                    return True
+            
+            return chat_type == "private"
         
         return True

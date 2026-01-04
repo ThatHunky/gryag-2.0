@@ -21,7 +21,7 @@ class ContextManager:
         chat_title: str | None = None,
         chat_type: str = "private",
         member_count: int | None = None,
-        bot_name: str = "Грягі",
+        bot_name: str = "Гряг",
         bot_username: str = "gryag_bot",
     ):
         self.chat_id = chat_id
@@ -44,17 +44,17 @@ class ContextManager:
         # 1. System prompt
         system_prompt = await self._get_system_prompt()
         
-        # 2-3. Summaries
+        # 2-3. Summaries (Keep in system prompt for background context)
         summaries = await self._get_summaries()
         if summaries:
             system_prompt += f"\n\n{summaries}"
         
-        # 4. Immediate context as formatted text
-        chat_history = await self._get_immediate_context_text()
-        if chat_history:
-            system_prompt += f"\n\n## Recent Chat History\n\n{chat_history}\n\n---\n\nRespond naturally to the last message above."
-        
         messages.append({"role": "system", "content": system_prompt})
+        
+        # 4. Immediate context as STRUCTURED MESSAGES
+        chat_history = await self._get_immediate_context_messages()
+        if chat_history:
+            messages.extend(chat_history)
         
         # 5. Visual Context (if replying to an image)
         if self.reply_to_message and self.reply_to_message.photo and self.bot:
@@ -92,8 +92,19 @@ class ContextManager:
         # Format memories
         user_memories = ""
         if memories:
-            facts = [f"- {m.fact}" for m in memories]
+            # Keep prompt compact and high-signal: include most recent facts only
+            recent = memories[-15:]
+            facts = [f"- {m.fact}" for m in recent]
             user_memories = "\n".join(facts)
+
+        # Tool list (kept in sync with actual registry)
+        try:
+            from bot.tools.registry import get_registry
+            registry = get_registry()
+            tools_lines = [f"- `{t.name}`: {t.description}" for t in registry.list_tools()]
+            tools_text = "\n".join(tools_lines)
+        except Exception:
+            tools_text = "Tools unavailable."
         
         # Build variables
         now = datetime.now()
@@ -110,7 +121,7 @@ class ContextManager:
             "botname": self.bot_name,
             "botusername": self.bot_username,
             "membercount": str(self.member_count or 0),
-            "tools": "weather, calculator, search_web, generate_image, remember_memory, recall_memories",
+            "tools": tools_text,
             "recent_summary": "",  # Filled separately
             "long_summary": "",  # Filled separately
             "user_memories": user_memories,
@@ -138,8 +149,8 @@ class ContextManager:
             
             return "\n\n".join(parts)
 
-    async def _get_immediate_context_text(self) -> str:
-        """Get last N messages as formatted text for system prompt."""
+    async def _get_immediate_context_messages(self) -> list[dict]:
+        """Get last N messages as structured messages."""
         async with get_session() as session:
             msg_repo = MessageRepository(session)
             user_repo = UserRepository(session)
@@ -150,44 +161,101 @@ class ContextManager:
             )
             
             if not messages:
-                return ""
-            
-            # Note: get_recent already returns messages in chronological order (Oldest -> Newest)
-            # So the last message in the list is the most recent one.
+                return []
             
             # Build a dict for quick lookup of messages by telegram_message_id
             msg_by_tg_id = {msg.telegram_message_id: msg for msg in messages}
             
-            lines = []
+            structured_messages = []
+            # Track recent bot responses to prevent repetition loops
+            recent_bot_responses = []
+            seen_contents = set()  # Deduplication: skip exact duplicate messages
+            
             for msg in messages:
                 # Get user info
                 user = await user_repo.get_by_id(msg.user_id) if msg.user_id else None
                 
                 if msg.is_bot_message:
-                    # Bot message
-                    lines.append(f"[{self.bot_name}]: {msg.content}")
+                    # Skip if we've seen this exact bot response recently (prevent loops)
+                    content_hash = hash(msg.content[:200])  # Hash first 200 chars
+                    if content_hash in seen_contents:
+                        continue
+                    seen_contents.add(content_hash)
+                    
+                    # Limit recent bot responses in context (last 3 max)
+                    if len(recent_bot_responses) >= 3:
+                        continue
+                    recent_bot_responses.append(msg.content)
+                    
+                    # Assistant message
+                    structured_messages.append({
+                        "role": "assistant",
+                        "content": msg.content
+                    })
                 else:
-                    # Format user messages with full info for disambiguation
+                    # User message
                     user_name = user.full_name if user else "Unknown"
                     username = f"@{user.username}" if user and user.username else ""
                     user_id = msg.user_id or 0
+
+                    # In group chats, strip trigger-only pings ("гряг", "@bot") from the content
+                    # so the model answers the last meaningful message instead of looping/repeating.
+                    content_for_llm = msg.content
+                    if self.chat_type in {"group", "supergroup"}:
+                        content_for_llm = self._strip_group_triggers(content_for_llm)
+                        if not content_for_llm:
+                            # Skip messages that are only a trigger word/mention
+                            continue
                     
-                    # Format: [Name (@username, id:123)]: message
+                    # Construct message prefix for group context
+                    # Format: [Name (@username)]: message
                     if username:
-                        prefix = f"[{user_name} ({username}, id:{user_id})]"
+                        prefix = f"[{user_name} ({username})]"
                     else:
-                        prefix = f"[{user_name} (id:{user_id})]"
+                        prefix = f"[{user_name}]"
                     
-                    # Check if this is a reply to another message
+                    # Handle replies
                     reply_info = ""
                     if msg.reply_to_message_id:
                         replied_msg = msg_by_tg_id.get(msg.reply_to_message_id)
                         if replied_msg:
-                            reply_preview = replied_msg.content[:80]
-                            if len(replied_msg.content) > 80:
+                            reply_preview = replied_msg.content[:50]
+                            if len(replied_msg.content) > 50:
                                 reply_preview += "..."
-                            reply_info = f" (replying to: \"{reply_preview}\")"
+                            reply_info = f" (replying to \"{reply_preview}\")"
                     
-                    lines.append(f"{prefix}{reply_info}: {msg.content}")
+                    full_content = f"{prefix}{reply_info}: {content_for_llm}"
+                    
+                    structured_messages.append({
+                        "role": "user",
+                        "content": full_content,
+                        # "name": str(user_id) # Optional: OpenAI supports this, helpful for separation
+                    })
             
-            return "\n".join(lines)
+            return structured_messages
+
+    def _strip_group_triggers(self, text: str) -> str:
+        """Remove bot trigger keywords / mentions from group messages for LLM context."""
+        import re
+
+        result = text or ""
+
+        # Remove @bot mention (case-insensitive)
+        if self.bot_username:
+            result = re.sub(
+                rf"@{re.escape(self.bot_username)}\b",
+                "",
+                result,
+                flags=re.IGNORECASE,
+            )
+
+        # Remove trigger keywords (case-insensitive)
+        for keyword in self.settings.bot_trigger_keywords:
+            kw = (keyword or "").strip()
+            if not kw:
+                continue
+            result = re.sub(re.escape(kw), "", result, flags=re.IGNORECASE)
+
+        # Clean up leftover punctuation/whitespace
+        result = result.strip().strip(",.:-–—")
+        return result.strip()

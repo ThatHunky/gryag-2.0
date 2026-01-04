@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str = Field(..., description="Telegram bot token from @BotFather")
     bot_trigger_keywords_raw: str = Field(
-        default="gryag,грягі,griag",
+        default="gryag,Гряг,griag",
         alias="BOT_TRIGGER_KEYWORDS",
         description="Keywords that trigger the bot in group chats",
     )

@@ -35,9 +35,9 @@ def substitute_variables(content: str, variables: dict[str, str]) -> str:
 
 def _default_prompt(variables: dict[str, str]) -> str:
     """Generate default system prompt if no file exists."""
-    return f"""# Грягі - AI Telegram Bot
+    return f"""# Гряг - AI Telegram Bot
 
-Ти Грягі — AI-асистент в Telegram боті.
+Ти Гряг — AI-асистент в Telegram боті.
 
 ## Контекст
 - Чат: {variables.get('chatname', 'Unknown')} (ID: {variables.get('chatid', '')})

@@ -119,6 +119,7 @@ class LLMClient:
         tools: list[dict],
         model: str | None = None,
         max_tokens: int | None = None,
+        tool_choice: str | dict | None = None,
     ) -> dict:
         """
         Complete with tool calling support.
@@ -128,26 +129,87 @@ class LLMClient:
         model = model or self.settings.llm_model
         max_tokens = max_tokens or self.settings.llm_max_response_tokens
         
-        response = await self._make_request(
-            messages=messages,
-            model=model,
-            max_tokens=max_tokens,
-            tools=tools,
-        )
-        
-        message = response.choices[0].message
-        
-        return {
-            "content": message.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
+        for attempt in range(self.settings.llm_max_retries + 1):
+            try:
+                # FORCE overridden params for Mimo tool stability
+                response = await self._make_request(
+                    messages=messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    temperature=0.3,  # Mimo Requirement
+                    top_p=0.95,       # Mimo Requirement
+                    tool_choice=tool_choice,
+                )
+                
+                # DEBUG: Log raw response to debug tool calling issues
+                logger.info(f"LLM Raw Response: {response.model_dump_json()}")
+                
+                message = response.choices[0].message
+                
+                # Capture reasoning content for history if present (Mimo Requirement)
+                # We return it in content or a special field? 
+                # For now let's append it to content if it's not there, but `message.content` is what we return.
+                # Actually, the handler needs to store this. 
+                # Let's return the full message object or extra fields.
+                
+                result = {
+                    "content": message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
+                        for tc in (message.tool_calls or [])
+                    ],
                 }
-                for tc in (message.tool_calls or [])
-            ],
-        }
+                
+                # Extract reasoning_content if available (standard field for some models)
+                if hasattr(message, "reasoning_content") and message.reasoning_content:
+                    result["reasoning_content"] = message.reasoning_content
+                
+                return result
+
+                
+            except RateLimitError as e:
+                logger.warning(f"Rate limit hit in tools (attempt {attempt + 1}): {e}")
+                if attempt < self.settings.llm_max_retries:
+                    await self._backoff(attempt)
+                else:
+                    raise LLMError(str(e), "llm_rate_limit")
+                    
+            except APITimeoutError as e:
+                logger.warning(f"Timeout in tools (attempt {attempt + 1}): {e}")
+                if attempt < self.settings.llm_max_retries:
+                    await self._backoff(attempt)
+                else:
+                    raise LLMError(str(e), "llm_timeout")
+                    
+            except APIError as e:
+                # Handle Moderation Block (421) specifically
+                # Note: OpenAI library might put code in body, but e.code should be present
+                if getattr(e, "code", None) == 421 or "421" in str(e):
+                    logger.error(f"Moderation block detected: {e}")
+                    raise LLMError("Content blocked by moderation filter.", "moderation_blocked")
+
+                logger.error(f"API error in tools (attempt {attempt + 1}): {e}")
+                
+                 # Try fallback model if available
+                if (
+                    self.settings.llm_fallback_model
+                    and model != self.settings.llm_fallback_model
+                ):
+                    logger.info(f"Switching to fallback model: {self.settings.llm_fallback_model}")
+                    model = self.settings.llm_fallback_model
+                    continue
+                
+                if attempt < self.settings.llm_max_retries:
+                    await self._backoff(attempt)
+                else:
+                    raise LLMError(str(e), "model_unavailable")
+        
+        raise LLMError("Max retries exceeded", "llm_timeout")
 
     async def _make_request(
         self,
@@ -157,6 +219,7 @@ class LLMClient:
         temperature: float = 0.7,
         tools: list[dict] | None = None,
         tool_choice: str | dict | None = None,
+        top_p: float | None = None,
     ):
         """Make the actual API request."""
         kwargs: dict[str, Any] = {
@@ -165,6 +228,16 @@ class LLMClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        
+        # DEBUG: Log full context to check for repetition/errors
+        import json
+        try:
+            logger.info(f"LLM Request Context: {json.dumps(messages, ensure_ascii=False)}")
+        except Exception:
+            logger.warning("Failed to log request context")
         
         if tools:
             kwargs["tools"] = tools

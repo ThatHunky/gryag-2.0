@@ -1,0 +1,171 @@
+---
+description: AI rules derived by SpecStory from the project AI interaction history
+globs: *
+---
+
+## Headers
+
+## TECH STACK
+
+## PROJECT DOCUMENTATION & CONTEXT SYSTEM
+
+### Documentation Standards
+- Use mermaid diagrams for visual explanations
+- Include code examples for all major features
+- Cross-reference between documents
+- Maintain consistency in formatting
+- Include both English and Ukrainian versions (start with English, then translate)
+
+### Comprehensive Documentation Plan
+- Main README Enhancement: Expand with architecture overview, feature highlights with examples, quick links to all documentation sections, badges, project status, and an architecture diagram (mermaid).
+- Architecture Documentation: System architecture overview, component diagrams (mermaid), data flow diagrams, context management system deep-dive, message processing pipeline, tool calling workflow, database schema with relationships, and middleware chain explanation.
+- Enhanced Configuration Guide: Expand with all configuration options from bot/config.py, add configuration examples for different scenarios, include validation rules and constraints, add a troubleshooting section for common config issues, and document environment variable precedence.
+- Enhanced Deployment Guide: Add production deployment considerations, include Docker networking details, add a database migration guide, include backup and restore procedures, add monitoring and health check setup, and include scaling considerations.
+- Enhanced Tools Documentation: Document all 6 tools (calculator, weather, search, image, memory tools), add a tool development guide, include the tool registration process, add examples for each tool, and document the tool calling workflow.
+- API/Code Reference: Document key modules and classes, include method signatures and parameters, add usage examples, document repositories pattern, include middleware API, and document LLM client interface.
+- Development Guide: Setup development environment, project structure explanation, code style and conventions, testing guide, adding new features workflow, debugging guide, and contributing guidelines.
+- Context Management Deep-Dive: Explain immediate context system, summarization strategy (7-day, 30-day), user memory system, system prompt customization, token management and limits, and context assembly process.
+- Database Schema Documentation: Complete schema documentation, entity relationship diagrams, migration guide, repository pattern explanation, and query optimization tips.
+- Admin Guide: Admin commands reference, access control configuration, rate limiting management, user restriction system, and whitelist/blacklist management.
+- Troubleshooting Guide: Common issues and solutions, log analysis guide, performance optimization, error handling explanation, and debug mode setup.
+- Contributing Guide: Contribution workflow, code style guidelines, pull request process, testing requirements, and documentation standards.
+
+## CODING STANDARDS
+
+## DEBUGGING
+
+## WORKFLOW & RELEASE RULES
+
+- Make sure users can't trigger the bot twice if it hadn't finished responding
+- Ensure concurrency protection tracks per user instead of per chat.
+
+## Fixes applied
+
+### 1. Enhanced prompt
+- Made it explicit that the bot must call tools, not just claim it did
+- Added examples showing what to do when the user says "запам'ятай"
+- Added a rule: saying "Запам'ятав" without calling the tool is incorrect
+
+### 2. Improved tool description
+- Updated `save_user_fact` description to be more explicit
+- Emphasized that the fact is not saved until the tool is called
+
+### 3. Concurrency protection implemented
+### Changes made
+
+1. Changed tracking from chat-level to user-level:
+   - `_processing_chats: set[int]` → `_processing_users: set[tuple[int, int]]`
+   - Now tracks `(chat_id, user_id)` tuples instead of just `chat_id`
+
+2. Per-user blocking:
+   - Each user in a chat has their own processing state
+   - If User A triggers the bot, only User A's subsequent triggers are blocked
+   - User B can still trigger the bot in the same chat simultaneously
+
+### How it works now
+
+- User A sends message → bot starts processing → `(chat_id, user_A_id)` added to set
+- User A sends another message → check sees User A is busy → request skipped
+- User B sends message → check sees User B is not busy → request processed normally
+- Processing completes → `finally` block clears the flag → User A can trigger again
+
+### Benefits
+
+- Multiple users can interact simultaneously in the same chat
+- Each user is only blocked from duplicate triggers, not other users
+- Prevents spam from the same user while allowing natural multi-user conversations
+
+The bot now blocks duplicate triggers per user, not per chat.
+
+## Fixes applied
+
+### 1. Added delete/forget memory tools
+- Added `delete_user_fact` — deletes a specific fact (call `get_user_facts` first to find it)
+- Added `delete_all_user_facts` — deletes all memories
+- Updated prompt to instruct the bot to use these when users say "забудь то" or ask to forget something
+- Registered tools and updated `MEMORY_TOOL_NAMES` in both handlers
+
+### 2. Fixed message storage to prevent context pollution
+- Trigger-only messages (like "гряг" or "@bot") are no longer stored in the database
+- Added `_is_trigger_only_message()` to detect messages that are only triggers
+- Messages are checked before storage, so trigger-only pings don't pollute future context
+
+### 3. Prevented bot response loops
+- Added deduplication in context building — the bot won't see its own exact duplicate responses
+- Limited recent bot responses in context to the last 3 max to prevent loops
+- Uses content hashing to detect duplicates
+
+### 4. Updated prompt
+- Added instructions for using delete tools when users ask to forget something
+- Reinforced the "avoid repeating yourself" instruction
+
+## What this fixes
+
+- "забудь то" now works — the bot can actually delete memories
+- No more repetition loops — trigger-only messages aren't stored, and duplicate bot responses are filtered
+- Cleaner context — the bot sees the last meaningful message, not just "гряг"
+
+The bot should now:
+- Actually delete memories when asked
+- Not repeat the same long response over and over
+- Answer the actual question, not just the trigger word
+
+All tests pass. Ready to test in production.
+
+## Fixes applied
+
+### 1. Enhanced prompt
+- Made it explicit that the bot must call tools, not just claim it did
+- Added examples showing what to do when the user says "запам'ятай"
+- Added a rule: saying "Запам'ятав" without calling the tool is incorrect
+
+### 2. Improved tool description
+- Updated `save_user_fact` description to be more explicit
+- Emphasized that the fact is not saved until the tool is called
+
+### 3. Post-processing detection and retry
+- Detects when the model says "Запам'ятав" / "remembered" but didn't call `save_user_fact`
+- If detected, injects an error message and retries the same turn
+- Forces the model to call the tool before responding
+
+### 4. Updated LLM client
+- Added `tool_choice` parameter support to `complete_with_tools`
+
+## How it works
+
+When the user says "окей, запам'ятай що я живу в Пролісках":
+1. Model responds with "Запам'ятав..." but `tool_calls` is null
+2. Handler detects the mismatch (claims to remember + mentions personal fact + no tool call)
+3. Injects error: "ERROR: You said you remembered but did NOT call save_user_fact..."
+4. Retries the same turn — model must call the tool
+5. Tool executes and saves to database
+6. Bot responds naturally after the tool succeeds
+
+This should catch cases where the model claims to remember but doesn't call the tool, and force it to actually call `save_user_fact` before responding.
+
+The linter warnings are just markdown formatting suggestions (not code errors), and all tests pass.
+
+## Fixes applied
+
+### 1. Enhanced prompt
+- Made it explicit that the bot must call tools, not just claim it did
+- Added examples showing what to do when the user says "запам'ятай"
+- Added a rule: saying "Запам'ятав" without calling the tool is incorrect
+
+### 2. Improved tool description
+- Updated `save_user_fact` description to be more explicit
+- Emphasized that the fact is not saved until the tool is called
+
+## How it works now
+
+When the user says "окей, запам'ятай що я живу в Пролісках":
+1. Model responds with "Запам'ятав..." but `tool_calls` is null
+2. Handler detects the mismatch (claims to remember + mentions personal fact + no tool call)
+3. Injects error: "ERROR: You said you remembered but did NOT call save_user_fact..."
+4. Retries the same turn — model must call the tool
+5. Tool executes and saves to database
+6. Bot responds naturally after the tool succeeds
+
+This should catch cases where the model claims to remember but doesn't call the tool, and force it to actually call `save_user_fact` before responding.
+
+The linter warnings are just markdown formatting suggestions (not code errors), and all tests pass.
